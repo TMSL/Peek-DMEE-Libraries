@@ -1,5 +1,5 @@
 # Peek DMEE Libraries (PeekDMEELibraries)
-This is utility program for viewing and handling the content of DMEE library (.LBR) files.
+This is utility program for viewing and handling the content of Draftsman-EE (DMEE) library (.LBR) files.
 The program includes the ability to extract a module (part) from the library and write the content to a separate file. The source code demonstrates how the
 "dictionary" within the LBR file can be searched for a given module and how corresponding data for the module can be obtained.
 
