@@ -5,7 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 
-namespace PeekDCLibrary
+namespace PeekDMEELibs
 {
     public partial class DMEEPeekLibs : Form
     {
@@ -19,13 +19,13 @@ namespace PeekDCLibrary
         private DcDictionary dictionary = new DcDictionary();
         protected IEnumerable<string> libraryFiles { get; private set; }
 
-        public class LibraryFilesListBoxItem 
+        public class LibraryFilesListBoxItem
         {
             public String FileName { get; set; }
             public String FileFolder { get; set; }
             public String FullPath { get; set; }
         }
-         
+
         public DMEEPeekLibs()
         {
             InitializeComponent();
@@ -177,7 +177,7 @@ namespace PeekDCLibrary
             }
             //skip past linefeed, if any
             ch = (byte)file.ReadByte();
-            if (ch != 0x0A) filePos -=1;
+            if (ch != 0x0A) filePos -= 1;
 
             return str;
         }
@@ -221,23 +221,82 @@ namespace PeekDCLibrary
 
                 entryCount++;
             }
+            dictionary.fileName = inFile.Name;
             dictionary.size = recordsStart;
             dictionary.entryCount = entryCount;
             return entryCount;
         }
 
+        private class Module
+        {
+            public bool processed = false;
+            public bool found = false;
+            public string name = "";       // name of module
+            public string fName;            // name of source file for module data
+            public bool inLibrary = true;   // source file is a library
+            public int index = -1;          // dictionary index of module within library
+            public string data = "";        // data for module
+        }
+
+        private Module FindModuleInLibraries(string moduleName, MatchType matchType)
+        {
+            int index = -1;
+            string libFileName = "";
+            string moduleData = "";
+            DictionaryEntry entry = new DictionaryEntry();
+            Module module = new Module();
+
+            foreach (string libraryFileName in libraryFiles)
+            {
+                if (File.Exists(libraryFileName))
+                {
+                    libFileName = libraryFileName;
+                    FileStream inFile = new FileStream(libFileName, FileMode.Open, FileAccess.Read);
+                    DcDictionary dictionary = new DcDictionary();
+                    GetDictionary(inFile, dictionary);
+                    index = FindModuleInDictionary(dictionary, moduleName, 0, matchType);
+                    inFile.Close();
+                    if (index >= 0)
+                    {
+                        entry = dictionary.entries[index];
+                        libStatus status = GetModuleFromLibrary(dictionary, entry, ref moduleData);
+                        break;
+                    }
+                }
+            }
+            if (index >= 0)
+            {
+                Console.WriteLine("Found. Index = " + index + " in library file " + libFileName);
+                module.processed = false;
+                module.found = true;
+                module.inLibrary = true;
+                module.fName = libFileName;
+                module.index = index;
+                module.name = entry.name;
+                module.data = moduleData;
+            }
+            return module;
+        }
+
+         public enum MatchType { partial, full };
+
         // search dictionary entries for name starting from startIndex and return
         // index of entry if match found. Return -1 if match not found.
         // Using startIndex supports finding multiple matches. Setting startIndex to 0 will
         // return index of first match.
-        private int FindModuleInDictionary(DcDictionary dictionary, String moduleName, int startIndex)
+        private int FindModuleInDictionary(DcDictionary dictionary, String moduleName, int startIndex, MatchType matchType)
         {
             int index;
             bool found = false;
 
             for (index = startIndex; index < dictionary.entries.Count; index++)
             {
-                if (dictionary.entries[index].name == moduleName)
+                if (matchType == MatchType.full && dictionary.entries[index].name == moduleName)
+                {
+                    found = true;
+                    break;
+                }
+                else if (matchType == MatchType.partial && dictionary.entries[index].name.Contains(moduleName))
                 {
                     found = true;
                     break;
@@ -251,7 +310,7 @@ namespace PeekDCLibrary
 
         // Get command lines for module from Library file that corresponds to given dictionary entry.
         // The dictionary object holds the full name and path to the file.
-        private libStatus GetModuleFromLibrary(DcDictionary dictionary, DictionaryEntry entry, ref String module)
+        private libStatus GetModuleFromLibrary(DcDictionary dictionary, DictionaryEntry entry, ref String moduleData)
         {
             String str;
 
@@ -268,16 +327,54 @@ namespace PeekDCLibrary
             inFile.Position = entry.recordOffset;
 
             String line = "";
-            module = "";
+            moduleData = "";
             //bool first = true;
 
             while (inFile.Position < entry.recordOffset + entry.elementSize)
             {
                 line = ReadASCIILine(inFile, inFile.Position);
                 if (line == ((char)0x1A).ToString()) break;
-                module += line + "\r\n";
+                moduleData += line + "\r\n";
             }
             return libStatus.ModuleLoaded;
+        }
+
+        private static void LocateModulesInModule(string module)
+        {
+            string mod2 = (string)module.Clone();
+            string[] lines = mod2.Split('\n');
+            mod2 = mod2.Replace("\r\n", "\n");
+            List<string> moduleNames = new List<string>();
+            foreach (string s in lines)
+            {
+                string sLine = s;
+                string comment = "";
+                // first split off any text past first # delimiter, if any.
+                int x = sLine.IndexOf('#');  // returns -1 if not found
+                if (x >= 0)
+                {
+                    if (x < sLine.Length - 1) comment = sLine.Substring(x);
+                    sLine = sLine.Substring(0, x);
+                }
+                sLine = sLine.TrimEnd(' ');             // strip trailing spaces
+                while (sLine.Contains("  ")) sLine = sLine.Replace("  ", " ");  // convert multiple spaces to single
+                string[] fields = sLine.Split(' ');     // split into fields using space as delimiter
+                // add comment back into fields (Resize requires .NET 3.5 or later)
+                Array.Resize(ref fields, fields.Length + 1);
+                fields[fields.Length - 1] = comment;
+
+                // identify module (m) command lines and extract the module name
+                if (fields[0] == "m")
+                {
+                    // extract module name
+                    string mName = fields[7];
+                    if (moduleNames.Count == 0 || !moduleNames.Contains(mName))
+                    {
+                        moduleNames.Add(mName);
+                    }
+                }
+            }
+            Console.WriteLine("Modules list count: " + moduleNames.Count);
         }
 
         private void UpdateModuleListTextBox()
@@ -334,7 +431,17 @@ namespace PeekDCLibrary
             if (ext != "") str += "." + ext;
             SelectedModuleTextBox.Text = str;
 
-            ExtractToWindow();
+            string moduleData = "";
+            ExtractToWindow(ref moduleData);
+            ModuleDataTextBox.Clear();
+            if (moduleData.Length <= 2 && moduleData[0] == 0x0D)   // handle display of "empty" module record
+            {
+                ModuleDataTextBox.Text = "<empty>";
+            }
+            else // display module record strings in text box
+            {
+                ModuleDataTextBox.Text = moduleData.Substring(0, moduleData.Length - 2);  // remove last cr-lf to eliminate blank line in text box
+            }
         }
       
         private void ExtractToFileButton_Click(object sender, EventArgs e)
@@ -381,6 +488,7 @@ namespace PeekDCLibrary
         private void FindModuleButton_Click(object sender, EventArgs e)
         {
             String str = FindModuleTextBox.Text.ToUpper();
+            Module module = new Module();
 
             if (ModulesListBox.Items.Count == 0)
             {
@@ -397,6 +505,7 @@ namespace PeekDCLibrary
             bool found = false;
             if (FindInFileRadioButton.Enabled)
             {
+                module = FindModuleInLibraries(str, MatchType.partial);
                 for (int index = 0; index < ModulesListBox.Items.Count; index++)
                 {
                     if (ModulesListBox.Items[index].ToString().Contains(str))
@@ -433,32 +542,16 @@ namespace PeekDCLibrary
             }
         }
 
-        private void ExtractToWindow()
+        private void ExtractToWindow(ref string moduleData)
         {
             String str = moduleName;
 
-            int index = FindModuleInDictionary(dictionary, moduleName, 0);
+            int index = FindModuleInDictionary(dictionary, moduleName, 0, MatchType.full);
             if (index < 0) return;
 
             DictionaryEntry entry = dictionary.entries[index];
 
-            String moduleData = "";
             libStatus status = GetModuleFromLibrary(dictionary, entry, ref moduleData);
-            ModuleDataTextBox.Clear();
-            // FYI: TEXT.LBR apparently holds three different character sets where the first three digits are
-            // a number for the character set and the last three are the character value IN OCTAL. Yep. Octal.
-            // 40 is SPACE, Octal 144 is lowercase "d". So C001040 is a space while C001144 is a "d", etc.
-            // There are no commands in the module for drawing a "space" character. Consequently, the module only contains
-            // a cr-lf pair followed by 0x1A pad bytes. This results in an empty display in the "module data" text box.
-            // Since this means it's possible for a module to be "empty" rather than display an empty text box (which
-            // could look like a bug) the text <empty> is displayed to explictly indicate an empty module record has been encountered.
-            if (moduleData.Length <= 2 && moduleData[0] == 0x0D)   // handle display of "empty" module record
-            {
-                ModuleDataTextBox.Text = "<empty>";
-            } else // display module record strings in text box
-            {
-                ModuleDataTextBox.Text = moduleData.Substring(0, moduleData.Length - 2);  // remove last cr-lf to eliminate blank line in text box
-            }
         }
 
         private void LibraryListBoxItemSelected(object sender, EventArgs e)

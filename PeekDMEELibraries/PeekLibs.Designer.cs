@@ -1,4 +1,4 @@
-﻿namespace PeekDCLibrary
+﻿namespace PeekDMEELibs
 {
     partial class DMEEPeekLibs
     {
